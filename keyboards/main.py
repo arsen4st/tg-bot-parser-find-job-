@@ -14,6 +14,7 @@ def main_menu() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🔧 Задать фильтр", callback_data="set_filter")],
             [InlineKeyboardButton(text="📋 Мои каналы", callback_data="list_channels")],
             [InlineKeyboardButton(text="📋 Последние вакансии", callback_data="latest_vacancies")],
+            [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
             [InlineKeyboardButton(text="📊 Статус", callback_data="status")],
             [InlineKeyboardButton(text="⏸ Пауза / ▶️ Старт", callback_data="toggle_pause")],
         ]
@@ -106,5 +107,20 @@ def confirm_delete_profile(profile_id: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_delete_profile:{profile_id}"),
                 InlineKeyboardButton(text="❌ Отмена", callback_data=f"profile_menu:{profile_id}"),
             ]
+        ]
+    )
+
+
+def stats_keyboard(days: int = 7) -> InlineKeyboardMarkup:
+    """Кнопки переключения диапазона статистики."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📅 За 7 дней", callback_data="stats_days:7"),
+                InlineKeyboardButton(text="📅 За 14 дней", callback_data="stats_days:14"),
+                InlineKeyboardButton(text="📅 За 30 дней", callback_data="stats_days:30"),
+            ],
+            [InlineKeyboardButton(text="🔄 Обновить", callback_data="stats_refresh")],
+            [InlineKeyboardButton(text="◀️ В меню", callback_data="main_menu")],
         ]
     )

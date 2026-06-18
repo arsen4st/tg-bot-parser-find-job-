@@ -189,6 +189,101 @@ async def get_latest_vacancies(limit: int = 10, only_matched: bool = False) -> l
 
 
 # ---------------------------------------------------------------------------
+# Statistics
+# ---------------------------------------------------------------------------
+async def get_stats_total(user_id: int) -> dict:
+    """Общая статистика по вакансиям. user_id не используется — таблица общая."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(tz=timezone.utc)
+    today_start = int(datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp())
+    week_start = int((now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() - 7 * 86400))
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM vacancies") as cursor:
+            total = (await cursor.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COUNT(*) FROM vacancies WHERE created_at >= ?", (today_start,)
+        ) as cursor:
+            today = (await cursor.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COUNT(*) FROM vacancies WHERE created_at >= ?", (week_start,)
+        ) as cursor:
+            this_week = (await cursor.fetchone())[0]
+
+        async with db.execute(
+            "SELECT COUNT(*) FROM vacancies WHERE matched = 1"
+        ) as cursor:
+            passed_filters = (await cursor.fetchone())[0]
+
+        avg_per_day = round(this_week / 7, 1) if this_week else 0.0
+
+    return {
+        "total_found": total,
+        "today": today,
+        "this_week": this_week,
+        "passed_filters": passed_filters,
+        "avg_per_day": avg_per_day,
+    }
+
+
+async def get_stats_by_days(user_id: int, days: int = 7) -> list[dict]:
+    """Статистика по дням за последние N дней."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(tz=timezone.utc)
+    start_ts = int((now - timedelta(days=days)).timestamp())
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT
+                strftime('%Y-%m-%d', datetime(created_at, 'unixepoch')) AS day,
+                COUNT(*) AS count
+            FROM vacancies
+            WHERE created_at >= ?
+            GROUP BY day
+            ORDER BY day DESC
+            """,
+            (start_ts,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+    # Заполняем пустые дни нулями
+    result = {}
+    for row in rows:
+        result[row["day"]] = row["count"]
+
+    filled = []
+    for i in range(days - 1, -1, -1):
+        day = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+        filled.append({"date": day, "count": result.get(day, 0)})
+
+    return filled
+
+
+async def get_stats_by_channels(user_id: int, limit: int = 10) -> list[dict]:
+    """Топ каналов по количеству вакансий."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT channel_username AS channel, COUNT(*) AS count
+            FROM vacancies
+            GROUP BY channel_username
+            ORDER BY count DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
 # Users (paused state)
 # ---------------------------------------------------------------------------
 async def set_paused(user_id: int, paused: bool) -> None:
