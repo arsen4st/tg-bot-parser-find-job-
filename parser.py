@@ -172,10 +172,12 @@ class VacancyParser:
 
         link = self._message_link(entity, message.id)
         preview_text = self._trim(text, config.MAX_MESSAGE_LENGTH)
+        url_hash = self._url_hash(username, message.id)
 
         vacancy = {
             "channel_username": username,
             "message_id": message.id,
+            "url_hash": url_hash,
             "text": preview_text,
             "full_text": text,
             "score": score,
@@ -186,6 +188,13 @@ class VacancyParser:
             await self.callback(vacancy)
         except Exception as exc:
             logger.exception("Ошибка отправки вакансии в бот: %s", exc)
+
+    @staticmethod
+    def _url_hash(channel_username: str, message_id: int) -> str:
+        import hashlib
+
+        raw = f"{channel_username.lower().strip()}:{message_id}"
+        return hashlib.md5(raw.encode()).hexdigest()[:12]
 
     @staticmethod
     def _message_link(entity: Channel, message_id: int) -> str:

@@ -10,7 +10,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 import config
-from handlers import admin, channels, filters, menu, profiles, stats, vacancies
+from handlers import admin, channels, filters, menu, profiles, saved, stats, vacancies
 from middleware.admin import AdminMiddleware
 from middleware.errors import setup_error_handler
 from middleware.throttling import ThrottlingMiddleware
@@ -36,6 +36,7 @@ dp.include_router(filters.router)
 dp.include_router(vacancies.router)
 dp.include_router(profiles.router)
 dp.include_router(stats.router)
+dp.include_router(saved.router)
 dp.include_router(admin.router)
 
 # Глобальный обработчик ошибок

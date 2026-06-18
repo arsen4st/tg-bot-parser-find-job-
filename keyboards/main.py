@@ -13,6 +13,7 @@ def main_menu() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="👤 Профили", callback_data="profiles")],
             [InlineKeyboardButton(text="🔧 Задать фильтр", callback_data="set_filter")],
             [InlineKeyboardButton(text="📋 Мои каналы", callback_data="list_channels")],
+            [InlineKeyboardButton(text="❤️ Сохранённые", callback_data="saved")],
             [InlineKeyboardButton(text="📋 Последние вакансии", callback_data="latest_vacancies")],
             [InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
             [InlineKeyboardButton(text="📊 Статус", callback_data="status")],
@@ -21,13 +22,22 @@ def main_menu() -> InlineKeyboardMarkup:
     )
 
 
-def vacancy_button(link: str) -> InlineKeyboardMarkup:
-    """Кнопка перехода к вакансии."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🔥 Перейти к вакансии", url=link)],
-        ]
-    )
+def vacancy_button(
+    link: str, url_hash: str, is_saved: bool = False, saved_id: int | None = None
+) -> InlineKeyboardMarkup:
+    """Кнопки под вакансией: перейти и сохранить/убрать."""
+    buttons = [
+        [InlineKeyboardButton(text="🔥 Перейти к вакансии", url=link)],
+    ]
+    if is_saved and saved_id:
+        buttons.append(
+            [InlineKeyboardButton(text="💔 Убрать", callback_data=f"unsave:{saved_id}:{url_hash}")]
+        )
+    else:
+        buttons.append(
+            [InlineKeyboardButton(text="❤️ Сохранить", callback_data=f"save:{url_hash}")]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def back_to_menu() -> InlineKeyboardMarkup:
@@ -124,3 +134,48 @@ def stats_keyboard(days: int = 7) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="◀️ В меню", callback_data="main_menu")],
         ]
     )
+
+
+def saved_vacancy_actions_keyboard(saved_id: int, url: str) -> InlineKeyboardMarkup:
+    """Кнопки под сохранённой вакансией."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🔥 Открыть", url=url),
+                InlineKeyboardButton(text="✅ Откликнулся", callback_data=f"saved_status:{saved_id}:applied"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"saved_status:{saved_id}:rejected"),
+            ],
+            [
+                InlineKeyboardButton(text="🗑 Удалить", callback_data=f"saved_delete:{saved_id}"),
+            ],
+        ]
+    )
+
+
+def saved_list_keyboard(
+    offset: int, total: int, status: str | None = None, per_page: int = 5
+) -> InlineKeyboardMarkup:
+    """Навигация и фильтры списка сохранённых."""
+    buttons = []
+    filters_row = [
+        InlineKeyboardButton(text="Все", callback_data=f"saved_filter:all:0"),
+        InlineKeyboardButton(text="✅ Откликнулся", callback_data=f"saved_filter:applied:0"),
+        InlineKeyboardButton(text="❌ Отклонённые", callback_data=f"saved_filter:rejected:0"),
+    ]
+    buttons.append(filters_row)
+
+    page = offset // per_page + 1
+    pages = max(1, (total + per_page - 1) // per_page)
+    nav = []
+    if offset > 0:
+        nav.append(
+            InlineKeyboardButton(text="◀️ Назад", callback_data=f"saved_page:{max(0, offset - per_page)}:{status or 'all'}")
+        )
+    nav.append(InlineKeyboardButton(text=f"{page} / {pages}", callback_data="noop"))
+    if offset + per_page < total:
+        nav.append(
+            InlineKeyboardButton(text="Вперёд ▶️", callback_data=f"saved_page:{offset + per_page}:{status or 'all'}")
+        )
+    buttons.append(nav)
+    buttons.append([InlineKeyboardButton(text="◀️ В меню", callback_data="main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)

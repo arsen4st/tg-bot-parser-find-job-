@@ -22,6 +22,13 @@ def _dt_now() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 
+def _url_hash(channel_username: str, message_id: int) -> str:
+    import hashlib
+
+    raw = f"{channel_username.lower().strip()}:{message_id}"
+    return hashlib.md5(raw.encode()).hexdigest()[:12]
+
+
 async def init_db() -> None:
     """Создаёт таблицы и индексы, если их нет."""
     async with _lock:
@@ -39,6 +46,7 @@ async def init_db() -> None:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     channel_username TEXT NOT NULL,
                     message_id INTEGER NOT NULL,
+                    url_hash TEXT,
                     text TEXT NOT NULL,
                     score REAL DEFAULT 0.0,
                     matched INTEGER DEFAULT 0,
@@ -46,6 +54,25 @@ async def init_db() -> None:
                     created_at INTEGER NOT NULL,
                     UNIQUE(channel_username, message_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS saved_vacancies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    vacancy_id INTEGER NOT NULL,
+                    channel TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    url_hash TEXT NOT NULL,
+                    saved_at TEXT NOT NULL,
+                    status TEXT DEFAULT 'saved'
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_saved_user
+                    ON saved_vacancies(user_id, status);
+                CREATE INDEX IF NOT EXISTS idx_saved_url_hash
+                    ON saved_vacancies(user_id, url_hash);
+                CREATE INDEX IF NOT EXISTS idx_vacancies_url_hash
+                    ON vacancies(url_hash);
 
                 CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY,
@@ -86,6 +113,7 @@ async def _migrate_db() -> None:
         async with aiosqlite.connect(DB_PATH) as db:
             for table, column, col_type in [
                 ("vacancies", "salary", "INTEGER DEFAULT NULL"),
+                ("vacancies", "url_hash", "TEXT"),
                 ("users", "paused", "INTEGER DEFAULT 0"),
             ]:
                 try:
@@ -155,16 +183,17 @@ async def save_vacancy(
     salary: int | None = None,
 ) -> bool:
     channel_username = channel_username.lower().strip()
+    url_hash = _url_hash(channel_username, message_id)
     async with _lock:
         async with aiosqlite.connect(DB_PATH) as db:
             try:
                 await db.execute(
                     """
                     INSERT INTO vacancies
-                        (channel_username, message_id, text, score, matched, salary, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (channel_username, message_id, url_hash, text, score, matched, salary, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (channel_username, message_id, text, score, int(matched), salary, _now()),
+                    (channel_username, message_id, url_hash, text, score, int(matched), salary, _now()),
                 )
                 await db.commit()
                 return True
@@ -176,7 +205,7 @@ async def get_latest_vacancies(limit: int = 10, only_matched: bool = False) -> l
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         query = """
-            SELECT channel_username, message_id, text, score, matched, salary, created_at
+            SELECT channel_username, message_id, url_hash, text, score, matched, salary, created_at
             FROM vacancies
         """
         if only_matched:
@@ -281,6 +310,128 @@ async def get_stats_by_channels(user_id: int, limit: int = 10) -> list[dict]:
         ) as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Saved vacancies (избранное)
+# ---------------------------------------------------------------------------
+async def save_vacancy_to_favorites(
+    user_id: int, vacancy_id: int, channel: str, text: str, url: str
+) -> int | None:
+    """Сохраняет вакансию в избранное. Возвращает id записи или None, если уже есть."""
+    url_hash = _url_hash(channel, int(url.split("/")[-1]))
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT 1 FROM saved_vacancies WHERE user_id = ? AND url_hash = ?",
+                (user_id, url_hash),
+            ) as cursor:
+                if await cursor.fetchone():
+                    return None
+            cursor = await db.execute(
+                """
+                INSERT INTO saved_vacancies
+                    (user_id, vacancy_id, channel, text, url, url_hash, saved_at, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, vacancy_id, channel, text, url, url_hash, _dt_now(), "saved"),
+            )
+            await db.commit()
+            return cursor.lastrowid
+
+
+async def remove_saved(saved_id: int) -> bool:
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute(
+                "DELETE FROM saved_vacancies WHERE id = ?", (saved_id,)
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+
+async def get_saved(
+    user_id: int, status: str | None = None, limit: int = 5, offset: int = 0
+) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if status:
+            async with db.execute(
+                """
+                SELECT id, vacancy_id, channel, text, url, saved_at, status
+                FROM saved_vacancies
+                WHERE user_id = ? AND status = ?
+                ORDER BY saved_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (user_id, status, limit, offset),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        else:
+            async with db.execute(
+                """
+                SELECT id, vacancy_id, channel, text, url, saved_at, status
+                FROM saved_vacancies
+                WHERE user_id = ?
+                ORDER BY saved_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (user_id, limit, offset),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def update_saved_status(saved_id: int, status: str) -> bool:
+    if status not in ("saved", "applied", "rejected"):
+        return False
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute(
+                "UPDATE saved_vacancies SET status = ? WHERE id = ?",
+                (status, saved_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+
+async def get_saved_count(user_id: int, status: str | None = None) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        if status:
+            async with db.execute(
+                "SELECT COUNT(*) FROM saved_vacancies WHERE user_id = ? AND status = ?",
+                (user_id, status),
+            ) as cursor:
+                return (await cursor.fetchone())[0]
+        async with db.execute(
+            "SELECT COUNT(*) FROM saved_vacancies WHERE user_id = ?",
+            (user_id,),
+        ) as cursor:
+            return (await cursor.fetchone())[0]
+
+
+async def is_vacancy_saved(user_id: int, url_hash: str) -> tuple[bool, int | None]:
+    """Возвращает (сохранена ли, saved_id)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id FROM saved_vacancies WHERE user_id = ? AND url_hash = ?",
+            (user_id, url_hash),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return True, row[0]
+            return False, None
+
+
+async def get_vacancy_by_url_hash(url_hash: str) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, channel_username, message_id, text FROM vacancies WHERE url_hash = ?",
+            (url_hash,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
 
 
 # ---------------------------------------------------------------------------
