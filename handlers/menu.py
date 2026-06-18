@@ -7,8 +7,16 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command
 
 import config
-from database import is_paused, list_channels, set_paused
-from keyboards.main import back_to_menu, main_menu, reply_main_menu
+from database import (
+    get_max_age_days,
+    get_min_salary,
+    get_requirements,
+    is_paused,
+    is_salary_filter_enabled,
+    list_channels,
+    set_paused,
+)
+from keyboards.main import back_to_menu, main_menu
 
 router = Router()
 
@@ -24,7 +32,6 @@ async def cmd_start(message: types.Message) -> None:
         "Выбери действие:",
         reply_markup=main_menu(),
     )
-    await message.answer("📱 Постоянное меню:", reply_markup=reply_main_menu())
 
 
 @router.callback_query(lambda c: c.data == "main_menu")
@@ -50,6 +57,37 @@ async def cb_list_channels(callback: types.CallbackQuery) -> None:
                 line += f" — {title}"
             lines.append(line)
         text = "\n".join(lines)
+    await callback.message.answer(text, reply_markup=back_to_menu())
+    await callback.answer()
+
+
+async def _build_status_text(user_id: int) -> str:
+    channels = await list_channels()
+    paused = await is_paused(user_id)
+    req = await get_requirements(user_id) or "не заданы"
+    min_salary = await get_min_salary(user_id)
+    salary_enabled = await is_salary_filter_enabled(user_id)
+    max_age = await get_max_age_days(user_id)
+
+    return (
+        f"📊 Статус:\n"
+        f"Каналов: {len(channels)}\n"
+        f"Рассылка: {'на паузе' if paused else 'активна'}\n"
+        f"Требования: {req}\n"
+        f"Мин. зарплата: {min_salary if salary_enabled else 'выкл'}\n"
+        f"Макс. возраст: {max_age if max_age > 0 else 'не задан'}"
+    )
+
+
+@router.message(Command("status"))
+async def cmd_status(message: types.Message) -> None:
+    text = await _build_status_text(message.from_user.id)
+    await message.answer(text, reply_markup=back_to_menu())
+
+
+@router.callback_query(lambda c: c.data == "status")
+async def cb_status(callback: types.CallbackQuery) -> None:
+    text = await _build_status_text(callback.from_user.id)
     await callback.message.answer(text, reply_markup=back_to_menu())
     await callback.answer()
 

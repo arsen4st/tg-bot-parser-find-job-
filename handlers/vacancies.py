@@ -22,6 +22,7 @@ router = Router()
 def _format_vacancy(v: dict) -> str:
     channel = v["channel_username"]
     score = v.get("score", 0.0)
+    salary = v.get("salary")
     ts = v.get("created_at")
     when = ""
     if ts:
@@ -30,10 +31,13 @@ def _format_vacancy(v: dict) -> str:
     text = v.get("text", "")
     preview = escape_html(trim_text(text, config.MAX_MESSAGE_LENGTH))
 
+    salary_line = f"<b>💰 Зарплата:</b> ~{salary:,.0f}\n" if salary else ""
+
     return (
         f"<b>💼 Вакансия</b>\n"
         f"<b>Канал:</b> @{escape_html(channel)}\n"
         f"<b>Совпадение:</b> {score:.1f}/10\n"
+        f"{salary_line}"
         f"<b>Время:</b> {when}\n\n"
         f"{preview}"
     )
@@ -62,7 +66,16 @@ async def cmd_latest(message: types.Message) -> None:
         limit = int(args[1]) if len(args) > 1 else config.DEFAULT_LATEST_LIMIT
     except ValueError:
         limit = config.DEFAULT_LATEST_LIMIT
+    await _send_latest(message, limit)
 
+
+@router.callback_query(lambda c: c.data == "latest_vacancies")
+async def cb_latest_vacancies(callback: types.CallbackQuery) -> None:
+    await _send_latest(callback.message, limit=10)
+    await callback.answer()
+
+
+async def _send_latest(message: types.Message, limit: int) -> None:
     limit = max(1, min(limit, 25))
     vacancies = await get_latest_vacancies(limit=limit, only_matched=False)
 
@@ -83,12 +96,3 @@ async def cmd_latest(message: types.Message) -> None:
         except Exception as exc:
             logger.exception("Ошибка отправки /latest: %s", exc)
         await asyncio.sleep(0.05)
-
-
-@router.callback_query(lambda c: c.data == "latest_vacancies")
-async def cb_latest_vacancies(callback: types.CallbackQuery) -> None:
-    # Имитируем вызов команды /latest
-    fake_message = callback.message
-    fake_message.text = "/latest 10"
-    await cmd_latest(fake_message)
-    await callback.answer()

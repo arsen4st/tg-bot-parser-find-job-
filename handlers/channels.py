@@ -8,8 +8,8 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from database import add_channel, remove_channel
-from keyboards.main import back_to_menu
+from database import add_channel, list_channels as db_list_channels, remove_channel
+from keyboards.main import back_to_menu, channels_management
 from utils.helpers import parse_channel_username
 
 router = Router()
@@ -41,6 +41,10 @@ async def cmd_add_channel(message: types.Message, state: FSMContext) -> None:
         await message.answer(reply, parse_mode=ParseMode.HTML)
         return
 
+    await _ask_for_channel(message, state)
+
+
+async def _ask_for_channel(message: types.Message, state: FSMContext) -> None:
     await state.set_state(AddChannelState.waiting_for_link)
     await message.answer(
         "📎 Пришли ссылку на Telegram-канал или его @username.\n\n"
@@ -60,14 +64,7 @@ async def process_channel_link(message: types.Message, state: FSMContext) -> Non
 
 @router.callback_query(F.data == "add_channel")
 async def cb_add_channel(callback: types.CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(AddChannelState.waiting_for_link)
-    await callback.message.answer(
-        "📎 Пришли ссылку на Telegram-канал или его @username.\n\n"
-        "Примеры:\n"
-        "<code>https://t.me/channelname</code>\n"
-        "<code>@channelname</code>",
-        parse_mode=ParseMode.HTML,
-    )
+    await _ask_for_channel(callback.message, state)
     await callback.answer()
 
 
@@ -79,31 +76,48 @@ async def cmd_remove_channel(message: types.Message) -> None:
         return
 
     username = parse_channel_username(args[1])
+    await _remove_and_notify(message, username)
+
+
+async def _remove_and_notify(target: types.Message, username: str) -> None:
     ok = await remove_channel(username)
     if ok:
-        await message.answer(f"✅ Канал @{username} удалён.")
+        await target.answer(f"✅ Канал @{username} удалён.", reply_markup=back_to_menu())
     else:
-        await message.answer(f"⚠️ Канал @{username} не найден.")
+        await target.answer(f"⚠️ Канал @{username} не найден.", reply_markup=back_to_menu())
+
+
+@router.callback_query(F.data.startswith("remove_channel:"))
+async def cb_remove_channel(callback: types.CallbackQuery) -> None:
+    username = callback.data.split(":", 1)[1]
+    await _remove_and_notify(callback.message, username)
+    await callback.answer()
 
 
 @router.message(Command("channels"))
 async def cmd_channels(message: types.Message) -> None:
-    from database import list_channels as db_list_channels
-
     channels = await db_list_channels()
     if not channels:
         await message.answer(
-            "📭 Пока нет отслеживаемых каналов. Добавь: /addchannel @channel",
+            "📭 Пока нет отслеживаемых каналов.",
             reply_markup=back_to_menu(),
         )
         return
+    await message.answer(
+        "📡 Нажми ❌, чтобы удалить канал:",
+        reply_markup=channels_management(channels),
+    )
 
-    lines = ["📡 Отслеживаемые каналы:"]
-    for ch in channels:
-        title = ch.get("title") or ""
-        line = f"• @{ch['username']}"
-        if title:
-            line += f" — {title}"
-        lines.append(line)
 
-    await message.answer("\n".join(lines), reply_markup=back_to_menu())
+@router.callback_query(F.data == "list_channels")
+async def cb_list_channels(callback: types.CallbackQuery) -> None:
+    channels = await db_list_channels()
+    if not channels:
+        text = "📭 Пока нет отслеживаемых каналов."
+        await callback.message.answer(text, reply_markup=back_to_menu())
+    else:
+        await callback.message.answer(
+            "📡 Нажми ❌, чтобы удалить канал:",
+            reply_markup=channels_management(channels),
+        )
+    await callback.answer()

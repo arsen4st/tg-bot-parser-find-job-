@@ -1,4 +1,4 @@
-"""Админ-команды: авторизация, пауза, статус."""
+"""Админ-команды: авторизация, пауза, резюме."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from aiogram.filters import Command
 from telethon import TelegramClient
 
 import config
-from database import get_requirements, is_paused, list_channels, set_paused
+from database import set_paused
 from keyboards.main import back_to_menu
 
 logger = logging.getLogger(__name__)
@@ -78,17 +78,3 @@ async def cmd_pause(message: types.Message) -> None:
 async def cmd_resume(message: types.Message) -> None:
     await set_paused(message.from_user.id, False)
     await message.answer("▶️ Рассылка возобновлена.", reply_markup=back_to_menu())
-
-
-@router.message(Command("status"))
-async def cmd_status(message: types.Message) -> None:
-    channels = await list_channels()
-    paused = await is_paused(message.from_user.id)
-    req = await get_requirements(message.from_user.id) or "не заданы"
-    await message.answer(
-        f"📊 Статус:\n"
-        f"Каналов: {len(channels)}\n"
-        f"Рассылка: {'на паузе' if paused else 'активна'}\n"
-        f"Требования: {req}",
-        reply_markup=back_to_menu(),
-    )

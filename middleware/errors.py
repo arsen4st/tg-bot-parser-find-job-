@@ -14,13 +14,14 @@ def setup_error_handler(dp: Dispatcher) -> None:
     """Регистрирует глобальный обработчик исключений."""
 
     @dp.error()
-    async def error_handler(update: Update, exception: Exception) -> None:
+    async def error_handler(event: Update, data: dict) -> None:
+        exception = data.get("exception")
         logger.exception("Ошибка при обработке update: %s", exception)
-        if update.message:
-            await update.message.answer(
+        if event.message:
+            await event.message.answer(
                 "❌ Произошла ошибка. Попробуй ещё раз или напиши /start."
             )
-        elif update.callback_query:
-            await update.callback_query.answer(
+        elif event.callback_query:
+            await event.callback_query.answer(
                 "❌ Ошибка. Попробуй позже.", show_alert=True
             )

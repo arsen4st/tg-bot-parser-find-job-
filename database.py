@@ -37,6 +37,7 @@ async def init_db() -> None:
                     text TEXT NOT NULL,
                     score REAL DEFAULT 0.0,
                     matched INTEGER DEFAULT 0,
+                    salary INTEGER DEFAULT NULL,
                     created_at INTEGER NOT NULL,
                     UNIQUE(channel_username, message_id)
                 );
@@ -44,7 +45,10 @@ async def init_db() -> None:
                 CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY,
                     requirements TEXT DEFAULT '',
-                    paused INTEGER DEFAULT 0
+                    paused INTEGER DEFAULT 0,
+                    min_salary INTEGER DEFAULT 0,
+                    salary_filter_enabled INTEGER DEFAULT 0,
+                    max_age_days INTEGER DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_vacancies_created
@@ -56,6 +60,25 @@ async def init_db() -> None:
                 """
             )
             await db.commit()
+
+    await _migrate_db()
+
+
+async def _migrate_db() -> None:
+    """Добавляет недостающие колонки в существующие таблицы."""
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            for column, col_type in [
+                ("min_salary", "INTEGER DEFAULT 0"),
+                ("salary_filter_enabled", "INTEGER DEFAULT 0"),
+                ("max_age_days", "INTEGER DEFAULT 0"),
+                ("salary", "INTEGER DEFAULT NULL"),
+            ]:
+                try:
+                    await db.execute(f"ALTER TABLE users ADD COLUMN {column} {col_type}")
+                    await db.commit()
+                except aiosqlite.OperationalError:
+                    pass  # колонка уже есть
 
 
 async def add_channel(username: str, title: str = "") -> bool:
@@ -104,7 +127,12 @@ async def channel_exists(username: str) -> bool:
 
 
 async def save_vacancy(
-    channel_username: str, message_id: int, text: str, score: float, matched: bool
+    channel_username: str,
+    message_id: int,
+    text: str,
+    score: float,
+    matched: bool,
+    salary: int | None = None,
 ) -> bool:
     channel_username = channel_username.lower().strip()
     async with _lock:
@@ -113,10 +141,10 @@ async def save_vacancy(
                 await db.execute(
                     """
                     INSERT INTO vacancies
-                        (channel_username, message_id, text, score, matched, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                        (channel_username, message_id, text, score, matched, salary, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (channel_username, message_id, text, score, int(matched), _now()),
+                    (channel_username, message_id, text, score, int(matched), salary, _now()),
                 )
                 await db.commit()
                 return True
@@ -128,7 +156,7 @@ async def get_latest_vacancies(limit: int = 10, only_matched: bool = False) -> l
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         query = """
-            SELECT channel_username, message_id, text, score, matched, created_at
+            SELECT channel_username, message_id, text, score, matched, salary, created_at
             FROM vacancies
         """
         if only_matched:
@@ -184,3 +212,101 @@ async def is_paused(user_id: int) -> bool:
         ) as cursor:
             row = await cursor.fetchone()
             return bool(row[0]) if row else False
+
+
+async def set_min_salary(user_id: int, amount: int) -> None:
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """
+                INSERT INTO users (user_id, min_salary)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET min_salary = excluded.min_salary
+                """,
+                (user_id, amount),
+            )
+            await db.commit()
+
+
+async def get_min_salary(user_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT min_salary FROM users WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+
+async def set_salary_filter(user_id: int, enabled: bool) -> None:
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """
+                INSERT INTO users (user_id, salary_filter_enabled)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET salary_filter_enabled = excluded.salary_filter_enabled
+                """,
+                (user_id, int(enabled)),
+            )
+            await db.commit()
+
+
+async def is_salary_filter_enabled(user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT salary_filter_enabled FROM users WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return bool(row[0]) if row else False
+
+
+async def set_max_age_days(user_id: int, days: int) -> None:
+    async with _lock:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                """
+                INSERT INTO users (user_id, max_age_days)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET max_age_days = excluded.max_age_days
+                """,
+                (user_id, days),
+            )
+            await db.commit()
+
+
+async def get_max_age_days(user_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT max_age_days FROM users WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+
+async def get_user_settings(user_id: int) -> dict:
+    """Возвращает все настройки пользователя одним запросом."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT requirements, paused, min_salary, salary_filter_enabled, max_age_days
+            FROM users WHERE user_id = ?
+            """,
+            (user_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return {
+                    "requirements": "",
+                    "paused": False,
+                    "min_salary": 0,
+                    "salary_filter_enabled": False,
+                    "max_age_days": 0,
+                }
+            return {
+                "requirements": row["requirements"],
+                "paused": bool(row["paused"]),
+                "min_salary": row["min_salary"],
+                "salary_filter_enabled": bool(row["salary_filter_enabled"]),
+                "max_age_days": row["max_age_days"],
+            }
