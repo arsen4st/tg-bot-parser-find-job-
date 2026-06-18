@@ -8,6 +8,7 @@ from aiogram.filters import Command
 
 import config
 from database import (
+    get_active_profile,
     get_max_age_days,
     get_min_salary,
     get_requirements,
@@ -17,6 +18,7 @@ from database import (
     set_paused,
 )
 from keyboards.main import back_to_menu, main_menu
+from utils.helpers import escape_html
 
 router = Router()
 
@@ -68,9 +70,12 @@ async def _build_status_text(user_id: int) -> str:
     min_salary = await get_min_salary(user_id)
     salary_enabled = await is_salary_filter_enabled(user_id)
     max_age = await get_max_age_days(user_id)
+    active_profile = await get_active_profile(user_id)
+    profile_name = active_profile["name"] if active_profile else "default"
 
     return (
         f"📊 Статус:\n"
+        f"Активный профиль: <b>{escape_html(profile_name)}</b>\n"
         f"Каналов: {len(channels)}\n"
         f"Рассылка: {'на паузе' if paused else 'активна'}\n"
         f"Требования: {req}\n"

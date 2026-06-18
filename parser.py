@@ -13,12 +13,23 @@ from telethon.errors import ChannelInvalidError, ChannelPrivateError, FloodWaitE
 from telethon.tl.types import Channel
 
 import config
-from database import get_user_settings, list_channels, save_vacancy
+from database import get_active_filters, list_channels, save_vacancy
 from filters import RequirementFilter, extract_salary, is_actual, is_likely_vacancy
 
 logger = logging.getLogger(__name__)
 
 VacancyCallback = Callable[[dict], Awaitable[None]]
+_active_parser: VacancyParser | None = None
+
+
+def register_parser(parser: VacancyParser) -> None:
+    global _active_parser
+    _active_parser = parser
+
+
+def invalidate_parser_cache() -> None:
+    if _active_parser is not None:
+        _active_parser.invalidate_settings_cache()
 
 
 class VacancyParser:
@@ -35,6 +46,11 @@ class VacancyParser:
         self._channels_cache: set[str] | None = None
         self._channels_ts: float = 0.0
         self._channels_ttl = 60.0
+
+    def invalidate_settings_cache(self) -> None:
+        """Инвалидирует кэш настроек. Вызывается после изменения профиля."""
+        self._settings_cache.pop("user", None)
+        logger.info("Кэш настроек инвалидирован")
 
     async def start(self) -> None:
         await self.client.start()
@@ -67,7 +83,7 @@ class VacancyParser:
         cached = self._settings_cache.get("user")
         if cached and now - cached["ts"] < self._cache_ttl:
             return cached["settings"]
-        settings = await get_user_settings(config.ADMIN_ID)
+        settings = await get_active_filters(config.ADMIN_ID)
         self._settings_cache["user"] = {"settings": settings, "ts": now}
         return settings
 
@@ -125,7 +141,6 @@ class VacancyParser:
         filt = RequirementFilter.parse(requirements)
         matched, score = filt.match(text)
 
-        # Проверка актуальности
         msg_date = message.date
         if msg_date and msg_date.tzinfo is None:
             msg_date = msg_date.replace(tzinfo=timezone.utc)
@@ -133,14 +148,13 @@ class VacancyParser:
             matched = False
             score -= 2.0
 
-        # Проверка минимальной зарплаты
         salary = extract_salary(text)
         if salary_filter_enabled and min_salary > 0:
             if salary is None or salary < min_salary:
                 matched = False
                 score -= 1.0
         if salary:
-            score += min(salary / 100000, 1.0)  # небольшой бонус за высокую зп
+            score += min(salary / 100000, 1.0)
 
         saved = await save_vacancy(
             channel_username=username,

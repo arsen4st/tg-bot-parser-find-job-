@@ -7,6 +7,7 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command
 
 from database import (
+    get_active_profile,
     get_max_age_days,
     get_min_salary,
     get_requirements,
@@ -18,6 +19,7 @@ from database import (
 )
 from filters import RequirementFilter
 from keyboards.main import back_to_menu
+from utils.helpers import escape_html
 
 router = Router()
 
@@ -55,12 +57,15 @@ async def cmd_set_req(message: types.Message) -> None:
 
 @router.message(Command("requirements"))
 async def cmd_requirements(message: types.Message) -> None:
-    req = await get_requirements(message.from_user.id)
-    min_salary = await get_min_salary(message.from_user.id)
-    salary_enabled = await is_salary_filter_enabled(message.from_user.id)
-    max_age = await get_max_age_days(message.from_user.id)
+    user_id = message.from_user.id
+    req = await get_requirements(user_id)
+    min_salary = await get_min_salary(user_id)
+    salary_enabled = await is_salary_filter_enabled(user_id)
+    max_age = await get_max_age_days(user_id)
+    profile = await get_active_profile(user_id)
+    profile_name = profile["name"] if profile else "default"
 
-    lines = ["🔧 Текущие настройки фильтра:\n"]
+    lines = [f"🔧 Активный профиль: <b>{escape_html(profile_name)}</b>\n"]
     lines.append(f"<b>Требования:</b> {req or 'не заданы'}")
     lines.append(f"<b>Мин. зарплата:</b> {min_salary if salary_enabled else 'выкл'}")
     lines.append(f"<b>Макс. возраст:</b> {max_age if max_age > 0 else 'не задан'}")
@@ -148,7 +153,8 @@ async def cb_set_filter(callback: types.CallbackQuery) -> None:
         "Дополнительно:\n"
         "<code>/setminsalary 50000</code>\n"
         "<code>/salaryfilter on</code>\n"
-        "<code>/setmaxage 7</code>",
+        "<code>/setmaxage 7</code>\n\n"
+        "Или управляй профилями: <code>/profiles</code>",
         parse_mode=ParseMode.HTML,
     )
     await callback.answer()

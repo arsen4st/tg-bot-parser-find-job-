@@ -13,7 +13,7 @@ import config
 from bot import start_bot, stop_bot
 from handlers.vacancies import send_vacancy
 from database import add_channel, init_db
-from parser import VacancyParser
+from parser import VacancyParser, register_parser
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,6 +55,7 @@ async def main() -> None:
         return
 
     parser = VacancyParser(callback=send_vacancy)
+    register_parser(parser)
     await parser.start()
 
     loop = asyncio.get_running_loop()
