@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from datetime import datetime, timezone
 
@@ -19,34 +20,21 @@ from database import (
     save_vacancy_to_favorites,
 )
 from keyboards.main import vacancy_button
-from utils.helpers import escape_html, trim_text
+from utils.formatter import format_vacancy
 
 logger = logging.getLogger(__name__)
 router = Router()
 
 
-def _format_vacancy(v: dict) -> str:
-    channel = v["channel_username"]
-    score = v.get("score", 0.0)
-    salary = v.get("salary")
-    ts = v.get("created_at")
-    when = ""
-    if ts:
-        when = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%d.%m %H:%M")
+def _url_hash(channel_username: str, message_id: int) -> str:
+    raw = f"{channel_username.lower().strip()}:{message_id}"
+    return hashlib.md5(raw.encode()).hexdigest()[:12]
 
-    text = v.get("text", "")
-    preview = escape_html(trim_text(text, config.MAX_MESSAGE_LENGTH))
 
-    salary_line = f"<b>💰 Зарплата:</b> ~{salary:,.0f}\n" if salary else ""
-
-    return (
-        f"<b>💼 Вакансия</b>\n"
-        f"<b>Канал:</b> @{escape_html(channel)}\n"
-        f"<b>Совпадение:</b> {score:.1f}/10\n"
-        f"{salary_line}"
-        f"<b>Время:</b> {when}\n\n"
-        f"{preview}"
-    )
+def _ts_to_datetime(ts: int | None) -> datetime | None:
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc)
 
 
 async def send_vacancy(vacancy: dict) -> None:
@@ -54,20 +42,22 @@ async def send_vacancy(vacancy: dict) -> None:
     from bot import bot
 
     try:
-        link = vacancy["link"]
-        url_hash = vacancy.get("url_hash")
-        if not url_hash:
-            import hashlib
-
-            raw = f"{vacancy['channel_username']}:{vacancy['message_id']}"
-            url_hash = hashlib.md5(raw.encode()).hexdigest()[:12]
+        channel = vacancy["channel_username"]
+        message_id = vacancy["message_id"]
+        url = vacancy["link"]
+        url_hash = vacancy.get("url_hash") or _url_hash(channel, message_id)
+        date = _ts_to_datetime(vacancy.get("created_at"))
+        text = vacancy.get("full_text") or vacancy.get("text") or ""
 
         is_saved, saved_id = await is_vacancy_saved(config.ADMIN_ID, url_hash)
+        formatted = format_vacancy(text, channel, url, date)
+
         await bot.send_message(
             chat_id=config.ADMIN_ID,
-            text=_format_vacancy(vacancy),
-            reply_markup=vacancy_button(link, url_hash, is_saved, saved_id),
+            text=formatted,
+            reply_markup=vacancy_button(url, url_hash, is_saved, saved_id),
             disable_web_page_preview=True,
+            parse_mode=ParseMode.HTML,
         )
     except Exception as exc:
         logger.exception("Не удалось отправить вакансию: %s", exc)
@@ -96,19 +86,20 @@ async def _send_latest(message: types.Message, limit: int) -> None:
     await message.answer(f"📋 Последние {len(vacancies)} вакансий:")
 
     for v in vacancies:
-        link = f"https://t.me/{v['channel_username']}/{v['message_id']}"
-        url_hash = v.get("url_hash")
-        if not url_hash:
-            import hashlib
-
-            raw = f"{v['channel_username']}:{v['message_id']}"
-            url_hash = hashlib.md5(raw.encode()).hexdigest()[:12]
+        channel = v["channel_username"]
+        message_id = v["message_id"]
+        url = f"https://t.me/{channel}/{message_id}"
+        url_hash = v.get("url_hash") or _url_hash(channel, message_id)
+        date = _ts_to_datetime(v.get("created_at"))
+        text = v.get("text") or ""
         is_saved, saved_id = await is_vacancy_saved(message.from_user.id, url_hash)
+        formatted = format_vacancy(text, channel, url, date)
         try:
             await message.answer(
-                text=_format_vacancy(v),
-                reply_markup=vacancy_button(link, url_hash, is_saved, saved_id),
+                text=formatted,
+                reply_markup=vacancy_button(url, url_hash, is_saved, saved_id),
                 disable_web_page_preview=True,
+                parse_mode=ParseMode.HTML,
             )
         except Exception as exc:
             logger.exception("Ошибка отправки /latest: %s", exc)
@@ -157,7 +148,11 @@ async def cb_save_vacancy(callback: types.CallbackQuery) -> None:
 
     await callback.answer("Сохранено ✅")
     saved_count = await get_saved_count(callback.from_user.id)
-    logger.info("Пользователь %s сохранил вакансию. Всего сохранено: %s", callback.from_user.id, saved_count)
+    logger.info(
+        "Пользователь %s сохранил вакансию. Всего сохранено: %s",
+        callback.from_user.id,
+        saved_count,
+    )
 
 
 @router.callback_query(F.data.startswith(CB_UNSAVE_PREFIX))

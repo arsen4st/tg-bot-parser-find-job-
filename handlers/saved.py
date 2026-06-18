@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from aiogram import F, Router, types
 from aiogram.enums import ParseMode
@@ -16,7 +16,7 @@ from database import (
     update_saved_status,
 )
 from keyboards.main import back_to_menu, saved_list_keyboard, saved_vacancy_actions_keyboard
-from utils.helpers import escape_html
+from utils.formatter import format_vacancy
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -29,39 +29,26 @@ _STATUS_LABELS = {
     "rejected": "Отклонено",
 }
 
-_MONTHS_RU = {
-    1: "янв",
-    2: "фев",
-    3: "мар",
-    4: "апр",
-    5: "май",
-    6: "июн",
-    7: "июл",
-    8: "авг",
-    9: "сен",
-    10: "окт",
-    11: "ноя",
-    12: "дек",
-}
+
+def _status_badge(status: str) -> str:
+    badges = {
+        "saved": "🔖",
+        "applied": "✅",
+        "rejected": "❌",
+    }
+    return badges.get(status, "🔖")
 
 
-def _format_saved_date(iso_string: str) -> str:
-    dt = datetime.fromisoformat(iso_string)
-    return f"{dt.day} {_MONTHS_RU.get(dt.month, '')}, {dt.hour:02d}:{dt.minute:02d}"
-
-
-def _format_saved_text(item: dict) -> str:
-    text = item["text"] or ""
-    title = text[:80].replace("\n", " ").strip()
-    if len(text) > 80:
-        title += "..."
-    status_label = _STATUS_LABELS.get(item["status"], item["status"])
-    return (
-        f"❤️ <b>{escape_html(title)}</b>\n"
-        f"📢 @{escape_html(item['channel'])}\n"
-        f"🕐 Сохранено: {_format_saved_date(item['saved_at'])}\n"
-        f"📌 Статус: {status_label}"
-    )
+def _iso_to_datetime(iso_string: str | None) -> datetime | None:
+    if not iso_string:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso_string)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError:
+        return None
 
 
 async def _send_saved_list(
@@ -81,18 +68,28 @@ async def _send_saved_list(
 
     items = await get_saved(user_id, status=status, limit=PER_PAGE, offset=offset)
 
-    # Если offset вышел за пределы — сбросить на 0
     if not items and offset > 0:
         await _send_saved_list(target, user_id, offset=0, status=status)
         return
 
-    text = f"❤️ Сохранённые вакансии ({_STATUS_LABELS.get(status, 'все')}):\n\n"
     for item in items:
-        text += _format_saved_text(item) + "\n\n"
+        date = _iso_to_datetime(item.get("saved_at"))
+        text = format_vacancy(
+            item["text"],
+            item["channel"],
+            item["url"],
+            date,
+        )
+        text += f"\n\n{_status_badge(item['status'])} Статус: {_STATUS_LABELS.get(item['status'], item['status'])}"
+        await target.answer(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=saved_vacancy_actions_keyboard(item["id"], item["url"]),
+            disable_web_page_preview=True,
+        )
 
     await target.answer(
-        text,
-        parse_mode=ParseMode.HTML,
+        f"Страница {offset // PER_PAGE + 1} / {(total + PER_PAGE - 1) // PER_PAGE}",
         reply_markup=saved_list_keyboard(offset, total, status=status, per_page=PER_PAGE),
     )
 
@@ -118,9 +115,12 @@ async def _edit_saved_list(
         await _edit_saved_list(message, user_id, offset=0, status=status)
         return
 
+    # При редактировании пересылаем заново не получится — заменим на текстовую сводку
     text = f"❤️ Сохранённые вакансии ({_STATUS_LABELS.get(status, 'все')}):\n\n"
     for item in items:
-        text += _format_saved_text(item) + "\n\n"
+        date = _iso_to_datetime(item.get("saved_at"))
+        card = format_vacancy(item["text"], item["channel"], item["url"], date)
+        text += card + f"\n{_status_badge(item['status'])} Статус: {_STATUS_LABELS.get(item['status'], item['status'])}\n\n"
 
     await message.edit_text(
         text,
@@ -182,22 +182,7 @@ async def cb_saved_status(callback: types.CallbackQuery) -> None:
         await callback.answer("❌ Вакансия не найдена.", show_alert=True)
         return
 
-    # Перезагружаем текущий список
-    # Извлекаем offset и status из reply_markup если возможно, иначе 0/None
-    offset = 0
-    status = None
-    if callback.message.reply_markup:
-        for row in callback.message.reply_markup.inline_keyboard:
-            for btn in row:
-                if btn.callback_data and btn.callback_data.startswith("saved_page:"):
-                    pp = btn.callback_data.split(":")
-                    try:
-                        offset = int(pp[1])
-                        status = pp[2] if len(pp) > 2 and pp[2] != "all" else None
-                    except (ValueError, IndexError):
-                        pass
-                    break
-
+    offset, status = _extract_offset_status(callback.message.reply_markup)
     await _edit_saved_list(callback.message, callback.from_user.id, offset=offset, status=status)
     await callback.answer(f"Статус: {_STATUS_LABELS.get(new_status, new_status)} ✅")
 
@@ -216,10 +201,16 @@ async def cb_saved_delete(callback: types.CallbackQuery) -> None:
         await callback.answer("❌ Вакансия не найдена.", show_alert=True)
         return
 
+    offset, status = _extract_offset_status(callback.message.reply_markup)
+    await _edit_saved_list(callback.message, callback.from_user.id, offset=offset, status=status)
+    await callback.answer("Удалено из избранного")
+
+
+def _extract_offset_status(reply_markup) -> tuple[int, str | None]:
     offset = 0
     status = None
-    if callback.message.reply_markup:
-        for row in callback.message.reply_markup.inline_keyboard:
+    if reply_markup:
+        for row in reply_markup.inline_keyboard:
             for btn in row:
                 if btn.callback_data and btn.callback_data.startswith("saved_page:"):
                     pp = btn.callback_data.split(":")
@@ -229,6 +220,4 @@ async def cb_saved_delete(callback: types.CallbackQuery) -> None:
                     except (ValueError, IndexError):
                         pass
                     break
-
-    await _edit_saved_list(callback.message, callback.from_user.id, offset=offset, status=status)
-    await callback.answer("Удалено из избранного")
+    return offset, status
